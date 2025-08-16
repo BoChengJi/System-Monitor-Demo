@@ -1,0 +1,61 @@
+{
+  "db": {
+    "type": "sqlite",
+    "sqlite_path": "devices.db",
+    "mssql": {
+      "server": "127.0.0.1",
+      "port": 1433,
+      "database": "SystemMonitor",
+      "username": "sa",
+      "password": "YourPassword123"
+    }
+  },
+  "groups": {
+    "CDA": [
+      "CDA_1",
+      "CDA_2",
+      "CDA_3"
+    ],
+    "CT": [
+      "CT_1",
+      "CT_2",
+      "CT_3"
+    ],
+    "CHILLER": [
+      "CHILLER_1",
+      "CHILLER_2",
+      "CHILLER_3"
+    ],
+    "PUMP": [
+      "PUMP_1",
+      "PUMP_2",
+      "PUMP_3"
+    ],
+    "MAU": [
+      "MAU_1",
+      "MAU_2"
+    ],
+    "ICOOL_1": [
+      "icool_1",
+      "icool_2",
+      "icool_3",
+      "icool_4"
+    ],
+    "ICOOL_2": [
+      "icool_5",
+      "icool_6",
+      "icool_7",
+      "icool_8"
+    ]
+  },
+    
+  "seed_on_first_run": true,
+  "seed_hours": 1,
+  "seed_step_minutes": 30,
+  "params": [
+    "Cleanroom_Temp",
+    "Cleanroom_Humid",
+    "CDA_Pressure",
+    "CH_Supply_Temp"
+  ]
+}

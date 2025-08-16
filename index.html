@@ -1,0 +1,538 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>設備監控面板</title>
+<style>
+  /* ===== 柔和配色（功能不變） ===== */
+  :root{
+    --bg:#f5f6f4;        /* 柔和淺灰米色背景 */
+    --panel:#ffffff;     /* 卡片白，陰影柔化 */
+    --text:#2f3542;      /* 深灰藍文字 */
+    --muted:#7f8c8d;     /* 次要文字灰 */
+    --green:#2ecc71;     /* 柔和綠(ON) */
+    --red:#e57373;       /* 柔和紅(OFF) */
+    --brand:#16a085;     /* 主題藍綠，略暗 */
+  }
+  * { box-sizing: border-box; }
+  body { font-family: Arial, Helvetica, sans-serif; display:flex; margin:0; background:var(--bg); color:var(--text); }
+  .sidebar { width: 260px; background:#34495e; color:#ecf0f1; padding:16px; }
+  .sidebar h3{margin-top:0}
+  .sidebar button { width:100%; padding:10px 12px; margin:8px 0; border:none; border-radius:10px; background:#3d566e; color:#ecf0f1; cursor:pointer; transition:.2s; }
+  .sidebar button:hover { background:var(--brand); }
+  .content { flex:1; padding:24px; min-height:100vh; }
+  .card { background:var(--panel); border-radius:14px; padding:16px; box-shadow:0 3px 12px rgba(0,0,0,.05); margin-bottom:20px; }
+
+  table { width:100%; border-collapse:collapse; }
+  th, td { border-bottom:1px solid #eee; padding:8px 10px; text-align:left; vertical-align:top; }
+  th { color:#34495e; background:#f0f2f4; position:sticky; top:0; z-index:1; }
+
+  .status-on { color:#fff; background:var(--green); padding:2px 8px; border-radius:999px; font-weight:bold; display:inline-block; }
+  .status-off{ color:#fff; background:var(--red); padding:2px 8px; border-radius:999px; font-weight:bold; display:inline-block; }
+
+  .filters { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:12px; color:#34495e; }
+  .filters input, .filters select{ padding:6px 8px; border-radius:8px; border:1px solid #d7dce0; background:#fff; }
+  .muted { color:var(--muted); font-size:12px; }
+
+  .grid-col { display:grid; grid-template-columns: 1fr; gap:16px; }
+  details { margin-left: 8px; }
+  .row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+
+  .btn { background:var(--brand); color:#fff; border:none; padding:8px 12px; border-radius:10px; cursor:pointer; }
+  .btn.secondary { background:#95a5a6; }
+
+  .ts-card { margin-top:12px; }
+  .pill { border-radius:999px; padding:4px 10px; font-weight:bold; cursor:pointer; border:1px solid #d7dce0; user-select:none; }
+  .pill.on  { background:var(--green); color:#fff; border-color:var(--green); }
+  .pill.off { background:var(--red);   color:#fff; border-color:var(--red); }
+
+  .dirty { outline: 2px dashed #f39c12; outline-offset: 2px; }
+
+  .chart-wrap { width:100%; height:320px; position:relative; }
+  svg.chart { width:100%; height:100%; background:#fff; border:1px solid #e6e9ec; border-radius:8px; }
+
+  /* 表格在小螢幕可左右捲動 */
+  .table-wrap{ width:100%; overflow:auto; }
+
+  /* 顯示密度切換 */
+  .density-compact th, .density-compact td{ padding:6px 8px; }
+  .density-comfort th, .density-comfort td{ padding:10px 12px; }
+
+  /* 大螢幕閱讀寬版 */
+  @media (min-width: 1440px){ .content{ padding:32px 40px; } }
+
+  /* 小螢幕調整 */
+  @media (max-width: 720px){
+    .filters{ gap:6px; }
+    .sidebar{ width: 220px; }
+    h3{ font-size:18px; }
+  }
+</style>
+</head>
+<body>
+  <div class="sidebar">
+    <h3>功能選單</h3>
+    <button onclick="showStatus()">即時開關機／歷史</button>
+    <button onclick="showParams()">重要參數（即時＋歷史）</button>
+    <button onclick="showParamOneCurve()">單點重要參數曲線</button>
+  </div>
+  <div class="content" id="content"><div class="muted">請從左側選擇功能</div></div>
+
+<script>
+/***** 共用工具 *****/
+function tag(num){ return num==1 ? '<span class="status-on">ON</span>' : '<span class="status-off">OFF</span>'; }
+function isoLocal(dt){ const d=new Date(dt); if(Number.isNaN(d.getTime())) return '—'; const pad=n=>(''+n).padStart(2,'0'); return d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate())+' '+pad(d.getHours())+':'+pad(d.getMinutes()); }
+
+/***** 頁面一：即時開關機 + 歷史（每設備自有時間） *****/
+async function showStatus(){
+  document.getElementById('content').innerHTML = `
+    <div class="grid-col">
+      <div class="card">
+        <div class="row" style="justify-content:space-between;">
+          <h3>即時開關機狀態（可切換）</h3>
+          <div class="row">
+            <button id="btnSaveStates" class="btn">確認修改</button>
+            <button id="btnDiscardStates" class="btn secondary">放棄修改</button>
+          </div>
+        </div>
+        <div id="nowCard"></div>
+        <div class="muted">每台設備各自顯示最後更新時間。切換 ON/OFF 後右側時間先顯示「現在（本頁修改）」；按「確認修改」成功寫入後，將刷新為資料庫時間。</div>
+      </div>
+
+      <div class="card">
+        <div class="filters">
+          <strong>歷史開關機狀態</strong>
+          <label>群組</label><select id="groupSel"></select>
+          <label>近時段</label>
+          <select id="hours">
+            <option value="6">6 小時</option>
+            <option value="12">12 小時</option>
+            <option value="24" selected>24 小時</option>
+            <option value="48">48 小時</option>
+          </select>
+          <label class="row" style="gap:6px;">
+            <input type="checkbox" id="onlyDiff" checked>
+            <span>只顯示變化</span>
+          </label>
+          <details>
+            <summary class="muted">精準日期（可展開）</summary>
+            <div class="row">
+              <label>起</label><input type="datetime-local" id="st">
+              <label>迄</label><input type="datetime-local" id="ed">
+            </div>
+          </details>
+          <button id="btnQuery" class="btn">查詢</button>
+        </div>
+        <div id="histCards"></div>
+        <div class="muted">卡片按時間倒序。勾選「只顯示變化」只列出當次有變更的設備；取消則顯示快照中所有設備，各自帶最近變更時間。</div>
+      </div>
+    </div>`;
+
+  // 取設備清單 & 群組
+  const devs = await (await fetch('/api/list/devices')).json();
+  const groups = [...new Set(devs.map(d=>d.group))];
+  const devsByGroup = {}; devs.forEach(d=>{ (devsByGroup[d.group] ||= []).push(d.device); });
+
+  // 取得最新狀態（每台設備各自有時間）
+  const latest = await (await fetch('/api/device_states')).json();
+  // 結構：latestByGroup[group].devices[device] = { val: 0/1, ts: '...' }
+  const latestByGroup = {};
+  for(const r of latest){
+    const g = r.group, dv = r.device;
+    (latestByGroup[g] ||= { devices:{} });
+    const prev = latestByGroup[g].devices[dv];
+    if(!prev || new Date(r.ts) > new Date(prev.ts)){
+      latestByGroup[g].devices[dv] = { val: r.status_num, ts: r.ts };
+    }
+  }
+
+  // 表頭：對每個設備顯示三欄（設備｜狀態｜時間）
+  const maxN = Math.max(1, ...groups.map(g => (devsByGroup[g]||[]).length));
+  const header = ['<th>群組</th>']
+    .concat(Array.from({length:maxN}, ()=>['<th>設備</th>','<th>狀態</th>','<th>時間</th>']).flat())
+    .join('');
+
+  // 暫存「待送出變更」
+  const dirty = new Map(); // key: group|device, val: 0/1
+
+  function pillHTML(g,dv,val){
+    const cls = val==1 ? 'pill on' : 'pill off';
+    return `<span class="${cls}" data-g="${g}" data-d="${dv}" data-v="${val}">${val==1?'ON':'OFF'}</span>`;
+  }
+
+  // 表身：每個設備都有自己時間
+  const nowRows = groups.map(g=>{
+    const tds = [`<td><strong>${g}</strong></td>`];
+    const devices = devsByGroup[g] || [];
+    devices.forEach(dv=>{
+      const info = (latestByGroup[g]?.devices||{})[dv];
+      const pill = (info && info.val!=null) ? pillHTML(g,dv,info.val) : '<span class="muted">—</span>';
+      const ts = info?.ts ? isoLocal(info.ts) : '—';
+      tds.push(`<td>${dv}</td><td>${pill}</td><td class="cell-ts" data-g="${g}" data-d="${dv}">${ts}</td>`);
+    });
+    for(let i=devices.length;i<maxN;i++){ tds.push(`<td></td><td></td><td></td>`); }
+    return `<tr>${tds.join('')}</tr>`;
+  }).join('');
+
+  document.getElementById('nowCard').innerHTML =
+    `<div class="card ts-card"><div class="table-wrap density-comfort"><table><thead><tr>${header}</tr></thead><tbody>${nowRows}</tbody></table></div></div>`;
+
+  // 切換：除了改 ON/OFF，順便把右側時間更新成「現在」
+  document.querySelectorAll('#nowCard .pill').forEach(el=>{
+    el.addEventListener('click', ()=>{
+      const g = el.dataset.g, d = el.dataset.d;
+      let v = Number(el.dataset.v);
+      v = v===1?0:1;
+      el.dataset.v = String(v);
+      el.textContent = v===1?'ON':'OFF';
+      el.classList.toggle('on', v===1);
+      el.classList.toggle('off', v===0);
+      el.classList.add('dirty');
+      dirty.set(`${g}|${d}`, v);
+
+      // 更新這台設備的顯示時間（先顯示本地現在時間，等「確認」寫入後，重新載入即為資料庫時間）
+      const tsCell = document.querySelector(`.cell-ts[data-g="${g}"][data-d="${d}"]`);
+      if(tsCell){
+        const now = new Date();
+        const pad = n=>(''+n).padStart(2,'0');
+        const shown = `${now.getFullYear()}-${pad(now.getMonth()+1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}`;
+        tsCell.textContent = shown + '（本頁修改）';
+        tsCell.classList.add('dirty');
+      }
+    });
+  });
+
+  // 存檔 / 放棄
+  document.getElementById('btnSaveStates').onclick = async ()=>{
+    if(dirty.size===0){ alert('目前沒有變更'); return; }
+    try{
+      for(const [key, v] of dirty.entries()){
+        const [g,d] = key.split('|');
+        await fetch('/api/manual_state', {
+          method:'POST', headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({group:g, device:d, status: v===1?'ON':'OFF'})
+        });
+      }
+      alert('已寫入，並留存紀錄。');
+      showStatus(); // 重新整理，帶出每台設備在資料庫中的最新時間
+    }catch(e){
+      console.error(e);
+      alert('寫入時發生錯誤');
+    }
+  };
+  document.getElementById('btnDiscardStates').onclick = ()=> showStatus();
+
+  /* 歷史區（整合：每設備自有時間 + 只顯示變化） */
+  const groupSel = document.getElementById('groupSel');
+  groupSel.innerHTML = ['<option value="">全部群組</option>'].concat(groups.map(g=>`<option>${g}</option>`)).join('');
+  document.getElementById('st').value = ''; document.getElementById('ed').value = '';
+
+  function buildHistCards(rows, groupFilter, onlyDiff){
+    const updatesByTs = {};
+    for(const r of rows){
+      if(groupFilter && r.group!==groupFilter) continue;
+      (updatesByTs[r.ts] ||= []).push({group:r.group, device:r.device, status:r.status_num, ts:r.ts});
+    }
+    const allGroups = groupFilter ? [groupFilter] : groups;
+    const devicesByGroup = devsByGroup;
+    const ascTimes = Object.keys(updatesByTs).sort((a,b)=> new Date(a) - new Date(b));
+
+    // 狀態快照：snap[g][d] = 0/1；lastTs[g][d] = 最近一次該設備變更時間
+    let snap = {}, lastTs = {};
+    const cards = []; // { ts, snapClone, lastTsClone, diffsByGroup }
+
+    function deepClone(obj){ const o={}; for(const k in obj){ o[k] = typeof obj[k]==='object' && obj[k]!==null ? deepClone(obj[k]) : obj[k]; } return o; }
+
+    for(const ts of ascTimes){
+      const diffsByGroup = {};
+      for(const u of updatesByTs[ts]){
+        (snap[u.group] ||= {}); (lastTs[u.group] ||= {});
+        const prevVal = snap[u.group][u.device];
+        snap[u.group][u.device] = u.status;
+        lastTs[u.group][u.device] = u.ts; // 該設備最近變更時間＝這筆更新時間
+        if(prevVal !== u.status){ (diffsByGroup[u.group] ||= {}); diffsByGroup[u.group][u.device] = u.status; }
+      }
+      cards.push({ ts, snapClone: deepClone(snap), lastTsClone: deepClone(lastTs), diffsByGroup });
+    }
+
+    // 渲染：倒序
+    const container = document.getElementById('histCards'); container.innerHTML='';
+    const maxN = Math.max(1, ...allGroups.map(g => (devicesByGroup[g]||[]).length));
+    const header = ['<th>群組</th>']
+      .concat(Array.from({length:maxN}, ()=>['<th>設備</th>','<th>狀態</th>','<th>時間</th>']).flat())
+      .join('');
+
+    cards.sort((a,b)=> new Date(b.ts) - new Date(a.ts));
+
+    for(const card of cards){
+      const referVals  = onlyDiff ? card.diffsByGroup : card.snapClone;
+      const referTimes = card.lastTsClone;
+      if(onlyDiff){
+        const hasAny = allGroups.some(g => referVals[g] && Object.keys(referVals[g]).length>0);
+        if(!hasAny) continue;
+      }
+      const rowsHTML = allGroups.map(g=>{
+        const tds = [`<td><strong>${g}</strong></td>`];
+        const devices = devicesByGroup[g] || [];
+        for(const dv of devices){
+          const val = (referVals[g]||{})[dv];
+          if(onlyDiff && val === undefined){
+            tds.push(`<td></td><td></td><td></td>`);
+          }else{
+            const shownVal = val!==undefined ? val : (card.snapClone[g]?.[dv]);
+            const shownTs  = (referTimes[g]?.[dv]) ? isoLocal(referTimes[g][dv]) : '—';
+            const shownTag = (shownVal==null) ? '<span class="muted">—</span>' : tag(shownVal);
+            tds.push(`<td>${dv}</td><td>${shownTag}</td><td>${shownTs}</td>`);
+          }
+        }
+        for(let i=devices.length;i<maxN;i++){ tds.push(`<td></td><td></td><td></td>`); }
+        return `<tr>${tds.join('')}</tr>`;
+      }).join('');
+
+      container.insertAdjacentHTML('beforeend', `
+        <div class="card ts-card">
+          <div class="muted" style="margin-bottom:6px;">快照時間：${isoLocal(card.ts)}</div>
+          <div class="table-wrap density-comfort">
+            <table><thead><tr>${header}</tr></thead><tbody>${rowsHTML}</tbody></table>
+          </div>
+        </div>
+      `);
+    }
+  }
+
+  async function queryHist(){
+    const g = groupSel.value;
+    const stv = document.getElementById('st').value;
+    const edv = document.getElementById('ed').value;
+    const hrs = document.getElementById('hours').value;
+    const onlyDiff = document.getElementById('onlyDiff').checked;
+    const qs = new URLSearchParams();
+    if(g) qs.set('group', g);
+    if(stv && edv){ qs.set('from', stv); qs.set('to', edv); } else { qs.set('hours', hrs); }
+    const data = await (await fetch('/api/device_state_history?'+qs.toString())).json();
+    buildHistCards(data, g || '', onlyDiff);
+  }
+  document.getElementById('btnQuery').onclick = queryHist;
+  await queryHist();
+}
+
+/***** 頁面二：重要參數（即時＋歷史，UX 強化） *****/
+async function showParams(){
+  document.getElementById('content').innerHTML = `
+    <div class="grid-col">
+      <div class="card">
+        <div class="row" style="justify-content:space-between;">
+          <h3>即時重要參數（可編輯）</h3>
+          <div class="row">
+            <button id="btnSaveParams" class="btn">確認修改</button>
+            <button id="btnDiscardParams" class="btn secondary">放棄修改</button>
+          </div>
+        </div>
+        <div class="table-wrap density-comfort" id="pnowWrap">
+          <table id="tblPNow"><thead><tr><th>參數</th><th>值</th><th>時間</th></tr></thead><tbody></tbody></table>
+        </div>
+        <div class="muted">直接修改數值欄，按「確認修改」一次寫入並留存紀錄。</div>
+      </div>
+
+      <div class="card">
+        <div class="filters">
+          <strong>歷史重要參數</strong>
+          <label>顯示密度</label>
+          <select id="density">
+            <option value="comfort" selected>舒適</option>
+            <option value="compact">緊湊</option>
+          </select>
+          <label>近時段</label>
+          <select id="phours">
+            <option value="6">6 小時</option>
+            <option value="12">12 小時</option>
+            <option value="24" selected>24 小時</option>
+            <option value="48">48 小時</option>
+          </select>
+          <details>
+            <summary class="muted">精準日期（可展開）</summary>
+            <div class="row">
+              <label>起</label><input type="datetime-local" id="pst">
+              <label>迄</label><input type="datetime-local" id="ped">
+            </div>
+          </details>
+          <label>參數</label><select id="paramOne"></select>
+          <button id="pbtn" class="btn">查詢</button>
+        </div>
+        <div id="paramCards"></div>
+        <div class="muted">按時間倒序顯示，每張卡片是一個時間點的數據快照。表格可左右捲動，適配不同尺寸顯示器。</div>
+      </div>
+    </div>`;
+
+  // 即時區：載入並可編輯
+  const now = await (await fetch('/api/important_params')).json();
+  const tbody = document.querySelector('#tblPNow tbody');
+  tbody.innerHTML = now.map(r=>{
+    const v = isFinite(+r.value) ? (+r.value).toFixed(2) : r.value;
+    return `<tr>
+      <td>${r.param}</td>
+      <td><input class="pVal" data-param="${r.param}" type="number" step="0.01" value="${v}" style="width:120px"></td>
+      <td>${r.ts}</td>
+    </tr>`;
+  }).join('');
+
+  const pDirty = new Map();
+  document.querySelectorAll('.pVal').forEach(inp=>{
+    inp.addEventListener('input', ()=>{ inp.classList.add('dirty'); pDirty.set(inp.dataset.param, inp.value); });
+  });
+  document.getElementById('btnSaveParams').onclick = async ()=>{
+    if(pDirty.size===0){ alert('目前沒有變更'); return; }
+    try{
+      for(const [p, v] of pDirty.entries()){
+        await fetch('/api/manual_param', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({param:p, value:v})});
+      }
+      alert('已寫入，並留存紀錄。');
+      showParams();
+    }catch(e){ console.error(e); alert('寫入時發生錯誤'); }
+  };
+  document.getElementById('btnDiscardParams').onclick = ()=> showParams();
+
+  // 歷史區：載入 + UX
+  const plist = await (await fetch('/api/list/params')).json();
+  const paramOne = document.getElementById('paramOne');
+  paramOne.innerHTML = plist.map(p=>`<option>${p}</option>`).join('');
+
+  function applyDensity(){
+    const wrapEls = document.querySelectorAll('.table-wrap');
+    const mode = document.getElementById('density').value;
+    wrapEls.forEach(w=>{
+      w.classList.remove('density-compact','density-comfort');
+      w.classList.add(mode==='compact' ? 'density-compact' : 'density-comfort');
+    });
+  }
+
+  function buildParamCards(data){
+    const map = {}; data.forEach(r=>{ (map[r.ts] ||= []).push(r); });
+    const times = Object.keys(map).sort((a,b)=> new Date(b)-new Date(a));
+    const container = document.getElementById('paramCards'); container.innerHTML='';
+    times.forEach(ts=>{
+      const rows = map[ts].map(r=>`<tr><td>${r.param}</td><td>${(isFinite(+r.value)?(+r.value).toFixed(2):r.value)}</td><td>${r.ts}</td></tr>`).join('');
+      container.insertAdjacentHTML('beforeend', `
+        <div class="card ts-card">
+          <div class="muted" style="margin-bottom:6px;">時間：${ts}</div>
+          <div class="table-wrap density-comfort">
+            <table><thead><tr><th>參數</th><th>值</th><th>時間</th></tr></thead><tbody>${rows}</tbody></table>
+          </div>
+        </div>`);
+    });
+    applyDensity();
+  }
+
+  async function query(){
+    const p = paramOne.value;
+    const stv = document.getElementById('pst').value;
+    const edv = document.getElementById('ped').value;
+    const hrs = document.getElementById('phours').value;
+    const qs = new URLSearchParams(); qs.append('param', p);
+    if(stv && edv){ qs.set('from', stv); qs.set('to', edv); } else { qs.set('hours', hrs); }
+    const data = await (await fetch('/api/important_params_history?'+qs.toString())).json();
+    buildParamCards(data);
+  }
+  document.getElementById('pbtn').onclick = query;
+  document.getElementById('density').onchange = applyDensity;
+  await query();
+}
+
+/***** 頁面三：單點重要參數曲線（折線圖） *****/
+async function showParamOneCurve(){
+  document.getElementById('content').innerHTML = `
+    <div class="card">
+      <h3>單點重要參數曲線</h3>
+      <div class="filters">
+        <label>參數</label><select id="curveParam"></select>
+        <label>近時段</label>
+        <select id="chours">
+          <option value="6">6 小時</option>
+          <option value="12">12 小時</option>
+          <option value="24" selected>24 小時</option>
+          <option value="48">48 小時</option>
+        </select>
+        <details>
+          <summary class="muted">精準日期（可展開）</summary>
+          <div class="row">
+            <label>起</label><input type="datetime-local" id="cst">
+            <label>迄</label><input type="datetime-local" id="ced">
+          </div>
+        </details>
+        <button id="cbtn" class="btn">繪製</button>
+      </div>
+      <div class="chart-wrap">
+        <svg id="chart" class="chart"></svg>
+      </div>
+      <div class="muted">此頁面只顯示單一參數折線圖；資料來自 <code>/api/important_params_history</code>。</div>
+    </div>`;
+
+  const plist = await (await fetch('/api/list/params')).json();
+  const sel = document.getElementById('curveParam');
+  sel.innerHTML = plist.map(p=>`<option>${p}</option>`).join('');
+
+  function drawLineChart(el, points){
+    const svg = el;
+    const W = svg.clientWidth || 800, H = svg.clientHeight || 320;
+    svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+    svg.innerHTML = '';
+
+    if(points.length===0){
+      svg.innerHTML = `<text x="${W/2}" y="${H/2}" text-anchor="middle" fill="#95a5a6">無資料</text>`;
+      return;
+    }
+    const xs = points.map(p=>p.t);
+    const ys = points.map(p=>p.v);
+    const minX = Math.min(...xs), maxX = Math.max(...xs);
+    const minY = Math.min(...ys), maxY = Math.max(...ys);
+    const pad = 28;
+
+    function sx(t){ return pad + ( (t - minX) / (maxX - minX || 1) ) * (W - pad*2); }
+    function sy(v){ return H - pad - ( (v - minY) / (maxY - minY || 1) ) * (H - pad*2); }
+
+    const axis = document.createElementNS('http://www.w3.org/2000/svg','g');
+    axis.innerHTML = `
+      <line x1="${pad}" y1="${H-pad}" x2="${W-pad}" y2="${H-pad}" stroke="#ddd"/>
+      <line x1="${pad}" y1="${pad}" x2="${pad}" y2="${H-pad}" stroke="#ddd"/>
+      <text x="${W-pad}" y="${H-pad+18}" text-anchor="end" font-size="10" fill="#7f8c8d">${new Date(maxX).toLocaleString()}</text>
+      <text x="${pad}" y="${H-pad+18}" text-anchor="start" font-size="10" fill="#7f8c8d">${new Date(minX).toLocaleString()}</text>
+      <text x="${pad-6}" y="${sy(maxY)}" text-anchor="end" font-size="10" fill="#7f8c8d">${maxY.toFixed(2)}</text>
+      <text x="${pad-6}" y="${sy(minY)}" text-anchor="end" font-size="10" fill="#7f8c8d">${minY.toFixed(2)}</text>
+    `;
+    svg.appendChild(axis);
+
+    const d = points.map((p,i)=> (i===0?'M':'L') + sx(p.t) + ' ' + sy(p.v)).join(' ');
+    const path = document.createElementNS('http://www.w3.org/2000/svg','path');
+    path.setAttribute('d', d);
+    path.setAttribute('fill','none');
+    path.setAttribute('stroke','#16a085'); /* 使用主題色，較柔和 */
+    path.setAttribute('stroke-width','2');
+    svg.appendChild(path);
+
+    for(const p of points){
+      const c = document.createElementNS('http://www.w3.org/2000/svg','circle');
+      c.setAttribute('cx', sx(p.t)); c.setAttribute('cy', sy(p.v)); c.setAttribute('r','2.5');
+      c.setAttribute('fill','#16a085');
+      svg.appendChild(c);
+    }
+  }
+
+  async function render(){
+    const p = sel.value;
+    const stv = document.getElementById('cst').value;
+    const edv = document.getElementById('ced').value;
+    const hrs = document.getElementById('chours').value;
+    const qs = new URLSearchParams(); qs.append('param', p);
+    if(stv && edv){ qs.set('from', stv); qs.set('to', edv); } else { qs.set('hours', hrs); }
+    const rows = await (await fetch('/api/important_params_history?'+qs.toString())).json();
+    const pts = rows.map(r=>({ t: new Date(r.ts).getTime(), v: Number(r.value) })).sort((a,b)=> a.t - b.t);
+    drawLineChart(document.getElementById('chart'), pts);
+  }
+
+  document.getElementById('cbtn').onclick = render;
+  await render();
+}
+</script>
+</body>
+</html>
