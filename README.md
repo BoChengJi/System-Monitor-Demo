@@ -18,4 +18,4 @@
 
 DEMO:
 
-![Demo](demo.mov)
+![Demo](demo.gif)
