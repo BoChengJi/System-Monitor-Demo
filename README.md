@@ -15,3 +15,7 @@
 - **Config 設定**：透過 `config.json` 設定資料庫連線、群組、設備、參數。
 
 ---
+
+DEMO:
+
+![Demo](demo.gif)
